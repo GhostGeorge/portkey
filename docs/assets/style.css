@@ -384,6 +384,16 @@ img {
   gap: 22px;
 }
 
+.release-status {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 24px 0;
+}
+
+.release-status a {
+  color: var(--gold);
+}
+
 .release {
   border: 1px solid var(--rule);
   background: linear-gradient(180deg, var(--bg-panel), var(--bg-panel-light));

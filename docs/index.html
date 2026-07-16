@@ -7,6 +7,7 @@
 <meta name="description" content="Portkey is a small Windows app that opens an SSH session or SFTP transfer to your saved servers with one click. No commands to remember.">
 <link rel="icon" href="assets/icon.ico">
 <link rel="stylesheet" href="assets/style.css">
+<script src="assets/releases.js" defer></script>
 </head>
 <body>
 <div class="wrap">
@@ -30,7 +31,7 @@
     <h1>Portkey</h1>
     <p class="hero__tagline">Touch a server, arrive instantly. SSH and SFTP for your VPS fleet, without a single command to remember.</p>
 
-    <a class="btn-download" href="https://github.com/GhostGeorge/portkey/releases/download/v1.1.0/Portkey.zip" download>
+    <a class="btn-download" id="hero-download" href="releases.html" download>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
         <rect x="3" y="4" width="18" height="13" rx="1.5"></rect>
         <path d="M8 21h8"></path>
@@ -40,7 +41,7 @@
     </a>
 
     <p class="hero__meta">
-      v1.1.0<span class="sep">·</span>Windows 10/11<span class="sep">·</span><a href="releases.html">see all versions</a>
+      <span id="hero-version">latest</span><span class="sep">·</span>Windows 10/11<span class="sep">·</span><a href="releases.html">see all versions</a>
     </p>
   </header>
 
