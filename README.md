@@ -2,6 +2,8 @@
 
 A small Windows desktop app for launching SSH sessions and transferring files to your VPS servers, without needing to remember SSH commands.
 
+**[Website & download](https://ghostgeorge.github.io/portkey/)** · **[All releases](https://ghostgeorge.github.io/portkey/releases.html)**
+
 ## Features
 
 - Save a list of servers (name, host, user, port, private key) and connect with a double-click — opens SSH in Windows Terminal for you
