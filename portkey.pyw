@@ -811,7 +811,7 @@ class PortkeyApp(tk.Tk):
         styled_label(status_row, "Status checks:").pack(side=tk.LEFT, padx=(0, 8))
 
         self.status_interval_buttons = {}
-        for label, value in (("15s", 15), ("30s", 30), ("60s", 60), ("Off", 0)):
+        for label, value in (("5s", 5), ("15s", 15), ("30s", 30), ("60s", 60), ("Off", 0)):
             btn = styled_button(
                 status_row, label, lambda v=value: self.manage_on_set_status_interval(v), primary=False
             )
