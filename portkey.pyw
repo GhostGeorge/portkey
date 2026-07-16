@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -291,6 +292,9 @@ class PortkeyApp(tk.Tk):
         # ---- transfer view state ----
         self.ssh_client = None
         self.sftp_client = None
+        self._transfer_entry = None
+        self._reconnect_last_failed_at = 0
+        self._did_reconnect = False
         self.local_dir = str(Path.home())
         self.remote_dir = "."
         self._remote_home_dir = None
@@ -504,25 +508,27 @@ class PortkeyApp(tk.Tk):
     def _check_server_reachable(self, entry):
         host = entry.get("host")
         port = entry.get("port") or 22
+        start = time.perf_counter()
         try:
             with socket.create_connection((host, port), timeout=2.5):
-                return True
+                return True, round((time.perf_counter() - start) * 1000)
         except OSError:
-            return False
+            return False, None
 
     def _refresh_server_statuses(self):
         for entry in self.all_entries:
             name = entry.get("name")
             self._submit(
                 lambda e=entry: self._check_server_reachable(e),
-                lambda ok, n=name: self._on_status_checked(n, ok),
+                lambda result, n=name: self._on_status_checked(n, result),
             )
 
-    def _on_status_checked(self, name, is_online):
-        self.server_status[name] = is_online
+    def _on_status_checked(self, name, result):
+        is_online, latency_ms = result
+        self.server_status[name] = {"online": is_online, "latency_ms": latency_ms}
         for i, entry in enumerate(self.filtered_entries):
             if entry.get("name") == name:
-                self._picker_set_dot_status(i, is_online)
+                self._picker_set_dot_status(i, is_online, latency_ms)
                 break
 
     def _reschedule_status_checks(self):
@@ -589,17 +595,26 @@ class PortkeyApp(tk.Tk):
         # _picker_refresh_selection_style; only the oval's fill color reflects
         # online/offline/unknown.
         dot = tk.Canvas(row, width=10, height=10, bg=BG_PANEL, highlightthickness=0, bd=0)
-        dot_status = self.server_status.get(name)
+        status = self.server_status.get(name)
+        dot_status = status["online"] if status else None
+        latency_ms = status.get("latency_ms") if status else None
         dot_color = STATUS_ONLINE if dot_status is True else STATUS_OFFLINE if dot_status is False else TEXT_MUTED
         dot_oval = dot.create_oval(1, 1, 9, 9, fill=dot_color, outline="")
         dot.pack(side=tk.RIGHT, padx=(0, 8))
+
+        # Latency -- packed side=RIGHT *after* the dot, so it lands just to
+        # the dot's left (reads "name ... 42 ms ● ⇅" left to right). Blank
+        # when offline/unknown, since latency is meaningless there.
+        latency_text = f"{latency_ms} ms" if dot_status and latency_ms is not None else ""
+        latency = styled_label(row, latency_text, bg=BG_PANEL, fg=TEXT_MUTED, font=("Segoe UI", 9))
+        latency.pack(side=tk.RIGHT, padx=(0, 4))
 
         for widget in (row, label):
             widget.bind("<Button-1>", lambda e, i=index: self._picker_on_row_click(i))
             widget.bind("<Double-Button-1>", lambda e, i=index: self._picker_on_row_double_click(i))
 
         self.picker_row_widgets.append(
-            {"frame": row, "label": label, "button": button, "dot": dot, "dot_oval": dot_oval}
+            {"frame": row, "label": label, "button": button, "dot": dot, "dot_oval": dot_oval, "latency": latency}
         )
 
     def _picker_on_row_click(self, index):
@@ -622,13 +637,15 @@ class PortkeyApp(tk.Tk):
                 bg=bg, activebackground=bg, fg=(BG_DARK if selected else TEXT_MUTED)
             )
             widgets["dot"].config(bg=bg)
+            widgets["latency"].config(bg=bg, fg=(BG_DARK if selected else TEXT_MUTED))
 
-    def _picker_set_dot_status(self, index, is_online):
+    def _picker_set_dot_status(self, index, is_online, latency_ms=None):
         if index >= len(self.picker_row_widgets):
             return
         widgets = self.picker_row_widgets[index]
         color = STATUS_ONLINE if is_online else STATUS_OFFLINE
         widgets["dot"].itemconfig(widgets["dot_oval"], fill=color)
+        widgets["latency"].config(text=f"{latency_ms} ms" if is_online and latency_ms is not None else "")
 
     def picker_move_selection(self, delta):
         if not self.filtered_entries:
@@ -673,6 +690,7 @@ class PortkeyApp(tk.Tk):
     def picker_open_transfer(self, server_name):
         self.show_transfer()
         self._select_transfer_server(server_name)
+        self.transfer_on_connect()
 
     def on_connect(self, _event=None):
         if self.picker_selected_index is None or not self.filtered_entries:
@@ -1288,6 +1306,7 @@ class PortkeyApp(tk.Tk):
             selection = listbox.curselection()
             if selection and selection[0] < len(visible_names):
                 self._select_transfer_server(visible_names[selection[0]])
+                self.transfer_on_connect()
             self._close_server_dropdown()
 
         def select_first(_event=None):
@@ -1451,9 +1470,17 @@ class PortkeyApp(tk.Tk):
             while True:
                 callback, payload = self._task_queue.get_nowait()
                 callback(payload)
+                if self._did_reconnect:
+                    self._did_reconnect = False
+                    self._flash_reconnected()
         except queue.Empty:
             pass
         self.after(50, self._poll_task_queue)
+
+    def _flash_reconnected(self):
+        original = self.transfer_status_var.get()
+        self.transfer_status_var.set(f"Reconnected to {self.transfer_server_var.get()}")
+        self.after(1500, lambda: self.transfer_status_var.set(original) if self.sftp_client else None)
 
     # -- connect / disconnect --
     def transfer_on_connect(self):
@@ -1463,6 +1490,7 @@ class PortkeyApp(tk.Tk):
             messagebox.showerror("Portkey", "Select a server first.")
             return
         self.transfer_disconnect()
+        self._transfer_entry = entry
         self.transfer_status_var.set("Connecting…")
         self._submit(lambda: self._do_connect(entry), self._on_connected, self._on_connect_error)
 
@@ -1541,6 +1569,7 @@ class PortkeyApp(tk.Tk):
             except Exception:
                 pass
             self.ssh_client = None
+        self._transfer_entry = None
         self.transfer_status_var.set("Not connected")
         if hasattr(self, "connect_server_btn"):
             self._set_connect_button_connected(False)
@@ -1551,6 +1580,42 @@ class PortkeyApp(tk.Tk):
         self.remote_path_var.set("")
         if hasattr(self, "remote_listbox"):
             self.remote_listbox.delete(0, tk.END)
+
+    def _reconnect_transfer_session(self):
+        # Called from a _submit worker thread when an in-flight SFTP call
+        # looks like the session died underneath it (idle timeout, network
+        # blip, etc). One attempt, with a short cooldown against a truly
+        # dead server turning a multi-file batch into a string of connect
+        # timeouts -- one per file.
+        if not self._transfer_entry:
+            return False
+        if time.monotonic() - self._reconnect_last_failed_at < 5:
+            return False
+        try:
+            client, sftp, _ = self._do_connect(self._transfer_entry)
+        except Exception:
+            self._reconnect_last_failed_at = time.monotonic()
+            return False
+        if self.ssh_client is not None:
+            try:
+                self.ssh_client.close()
+            except Exception:
+                pass
+        self.ssh_client = client
+        self.sftp_client = sftp
+        self._did_reconnect = True
+        return True
+
+    def _sftp_retry(self, fn):
+        # fn is a zero-arg callable that uses self.sftp_client. Must only be
+        # called from within a _submit worker thread (never the main thread),
+        # since a failed attempt blocks on a fresh SSH connect.
+        try:
+            return fn()
+        except (EOFError, OSError, paramiko.SSHException):
+            if not self._reconnect_transfer_session():
+                raise
+            return fn()
 
     # -- listing / navigation --
     def _render_listbox(self, listbox, rows):
@@ -1633,7 +1698,7 @@ class PortkeyApp(tk.Tk):
 
     def _do_remote_list(self, path):
         with self._sftp_lock:
-            attrs = self.sftp_client.listdir_attr(path)
+            attrs = self._sftp_retry(lambda: self.sftp_client.listdir_attr(path))
         rows = []
         for a in attrs:
             is_dir = stat.S_ISDIR(a.st_mode) if a.st_mode is not None else False
@@ -1700,7 +1765,7 @@ class PortkeyApp(tk.Tk):
 
         def work():
             with self._sftp_lock:
-                self.sftp_client.mkdir(new_path)
+                self._sftp_retry(lambda: self.sftp_client.mkdir(new_path))
             return remote_dir_snapshot
 
         self._submit(work, self._on_remote_mutate_done, self._on_remote_mutate_error)
@@ -1725,7 +1790,7 @@ class PortkeyApp(tk.Tk):
 
         def work():
             with self._sftp_lock:
-                self.sftp_client.rename(old_path, new_path)
+                self._sftp_retry(lambda: self.sftp_client.rename(old_path, new_path))
             return remote_dir_snapshot
 
         self._submit(work, self._on_remote_mutate_done, self._on_remote_mutate_error)
@@ -1756,9 +1821,9 @@ class PortkeyApp(tk.Tk):
                 for path, is_dir in targets:
                     try:
                         if is_dir:
-                            self.sftp_client.rmdir(path)
+                            self._sftp_retry(lambda p=path: self.sftp_client.rmdir(p))
                         else:
-                            self.sftp_client.remove(path)
+                            self._sftp_retry(lambda p=path: self.sftp_client.remove(p))
                     except (IOError, OSError) as exc:
                         failures.append((posixpath.basename(path), str(exc)))
             return remote_dir_snapshot, failures
@@ -1832,10 +1897,10 @@ class PortkeyApp(tk.Tk):
                     local_path = str(Path(local_dir_snapshot) / row["name"])
                     remote_path = self._remote_join(remote_dir_snapshot, row["name"])
                     try:
-                        self.sftp_client.put(
-                            local_path, remote_path,
+                        self._sftp_retry(lambda lp=local_path, rp=remote_path: self.sftp_client.put(
+                            lp, rp,
                             callback=self._make_progress_cb(idx, len(files), row["name"]),
-                        )
+                        ))
                     except Exception as exc:
                         failures.append((row["name"], str(exc)))
             return remote_dir_snapshot, skipped_dirs, failures
@@ -1872,10 +1937,10 @@ class PortkeyApp(tk.Tk):
                     remote_path = self._remote_join(remote_dir_snapshot, row["name"])
                     local_path = str(Path(local_dir_snapshot) / row["name"])
                     try:
-                        self.sftp_client.get(
-                            remote_path, local_path,
+                        self._sftp_retry(lambda rp=remote_path, lp=local_path: self.sftp_client.get(
+                            rp, lp,
                             callback=self._make_progress_cb(idx, len(files), row["name"]),
-                        )
+                        ))
                     except Exception as exc:
                         failures.append((row["name"], str(exc)))
             return local_dir_snapshot, skipped_dirs, failures
