@@ -1573,9 +1573,11 @@ class PortkeyApp(tk.Tk):
         self.transfer_status_var.set("Not connected")
         if hasattr(self, "connect_server_btn"):
             self._set_connect_button_connected(False)
-        self.local_rows = []
+        # Local rows are deliberately left alone -- browsing the local
+        # pane doesn't depend on the SSH/SFTP session (see show_transfer),
+        # so disconnecting/reconnecting the remote side shouldn't blow away
+        # local_listbox's already-rendered rows out from under it.
         self.remote_rows = []
-        self.local_filtered_rows = []
         self.remote_filtered_rows = []
         self.remote_path_var.set("")
         if hasattr(self, "remote_listbox"):
