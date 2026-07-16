@@ -1,4 +1,5 @@
 import ctypes
+import json
 import os
 import posixpath
 import queue
@@ -9,6 +10,8 @@ import sys
 import threading
 import time
 import tkinter as tk
+import urllib.request
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -71,7 +74,11 @@ CONFIG_HEADER = (
     "# activating a portkey, so you can launch several sessions in a row.\n"
 )
 
-DEFAULT_SETTINGS = {"close_on_connect": True, "status_check_interval": 30}
+VERSION = "1.1.0"
+RELEASES_API_URL = "https://api.github.com/repos/GhostGeorge/portkey/releases/latest"
+RELEASES_PAGE_URL = "https://ghostgeorge.github.io/portkey/releases.html"
+
+DEFAULT_SETTINGS = {"close_on_connect": True, "status_check_interval": 30, "check_for_updates": True}
 
 BG_DARK = "#0f0a1a"
 BG_PANEL = "#1c1430"
@@ -288,6 +295,7 @@ class PortkeyApp(tk.Tk):
         self.manage_selected_index = None
         self.settings = dict(DEFAULT_SETTINGS)
         self.close_on_connect_var = tk.BooleanVar(value=DEFAULT_SETTINGS["close_on_connect"])
+        self.check_for_updates_var = tk.BooleanVar(value=DEFAULT_SETTINGS["check_for_updates"])
 
         # ---- transfer view state ----
         self.ssh_client = None
@@ -333,6 +341,8 @@ class PortkeyApp(tk.Tk):
         self.show_picker()
         self.reload_config()
         self._poll_task_queue()
+        if self.settings.get("check_for_updates", True):
+            self._submit(self._fetch_latest_version, self._on_update_check_success, lambda exc: None)
 
     # ---------------------------------------------------------- picker view
     def _build_picker(self, parent):
@@ -360,6 +370,18 @@ class PortkeyApp(tk.Tk):
             fg=TEXT_MUTED,
             bg=BG_DARK,
         ).pack(anchor="w", pady=(2, 0))
+
+        # Left unpacked (zero layout space) until an update is actually
+        # found -- see _on_update_check_success / _show_update_notice.
+        self.update_notice_label = tk.Label(
+            title_box,
+            text="",
+            font=("Segoe UI", 9, "bold"),
+            fg=GOLD,
+            bg=BG_DARK,
+            cursor="hand2",
+        )
+        self.update_notice_label.bind("<Button-1>", lambda _e: webbrowser.open(RELEASES_PAGE_URL))
 
         tk.Button(
             header,
@@ -502,8 +524,27 @@ class PortkeyApp(tk.Tk):
         self.all_entries = config["vps"]
         self.settings = config["settings"]
         self.close_on_connect_var.set(self.settings.get("close_on_connect", True))
+        self.check_for_updates_var.set(self.settings.get("check_for_updates", True))
         self.refresh_list()
         self._reschedule_status_checks()
+
+    def _fetch_latest_version(self):
+        req = urllib.request.Request(
+            RELEASES_API_URL, headers={"Accept": "application/vnd.github+json"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.load(resp)
+        return data.get("tag_name", "").lstrip("v")
+
+    def _on_update_check_success(self, latest_version):
+        try:
+            current = tuple(int(x) for x in VERSION.split("."))
+            latest = tuple(int(x) for x in latest_version.split("."))
+        except ValueError:
+            return
+        if latest > current:
+            self.update_notice_label.config(text=f"↑ v{latest_version} available")
+            self.update_notice_label.pack(anchor="w", pady=(2, 0))
 
     def _check_server_reachable(self, entry):
         host = entry.get("host")
@@ -817,6 +858,30 @@ class PortkeyApp(tk.Tk):
             )
             btn.pack(side=tk.LEFT, padx=(0, 4))
             self.status_interval_buttons[value] = btn
+
+        tk.Checkbutton(
+            parent,
+            text="Check for updates on startup",
+            variable=self.check_for_updates_var,
+            command=self.on_toggle_check_for_updates,
+            bg=BG_DARK,
+            fg=TEXT_MUTED,
+            selectcolor=BG_PANEL,
+            activebackground=BG_DARK,
+            activeforeground=GOLD,
+            relief=tk.FLAT,
+            highlightthickness=0,
+            border=0,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+        ).pack(anchor="w", padx=20, pady=(0, 14))
+
+    def on_toggle_check_for_updates(self):
+        self.settings["check_for_updates"] = self.check_for_updates_var.get()
+        try:
+            save_config(self.all_entries, self.settings)
+        except Exception as exc:
+            messagebox.showerror("Portkey", f"Failed to save config.yaml:\n{exc}")
 
     def manage_on_set_status_interval(self, value):
         self.settings["status_check_interval"] = value
