@@ -1,0 +1,2 @@
+pyyaml
+paramiko>=3.4

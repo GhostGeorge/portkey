@@ -1,0 +1,28 @@
+# PyInstaller build artifacts -- regenerate with:
+#   python -m PyInstaller Portkey.spec --noconfirm
+build/
+dist/
+*.spec.bak
+
+# Packaged/distributable outputs -- rebuilt from portkey.pyw + Portkey.spec,
+# not source. See AGENTS.md for the rebuild + repackage steps.
+Portkey.exe
+Portkey.zip
+release/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Per-user runtime data -- lives in %APPDATA%\Portkey, never in the repo,
+# but ignored here too in case a stray copy ever ends up in this folder.
+config.yaml
+
+# Editor / OS cruft
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
