@@ -74,7 +74,7 @@ CONFIG_HEADER = (
     "# activating a portkey, so you can launch several sessions in a row.\n"
 )
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 RELEASES_API_URL = "https://api.github.com/repos/GhostGeorge/portkey/releases/latest"
 RELEASES_PAGE_URL = "https://ghostgeorge.github.io/portkey/releases.html"
 
@@ -121,6 +121,40 @@ def build_entry(name, host, user, port, key):
     if key:
         entry["key"] = key
     return entry
+
+
+def parse_ssh_config(text):
+    entries = []
+    names, current = [], {}
+
+    def flush():
+        for name in names:
+            if any(ch in name for ch in "*?"):
+                continue  # wildcard/pattern blocks aren't real hosts
+            port_text = current.get("port", "")
+            entries.append(build_entry(
+                name,
+                current.get("hostname", name),
+                current.get("user", ""),
+                int(port_text) if port_text.isdigit() else None,
+                current.get("identityfile", ""),
+            ))
+
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        keyword, value = parts[0].lower(), parts[1].strip()
+        if keyword == "host":
+            flush()
+            names, current = value.split(), {}
+        elif keyword == "identityfile" and keyword not in current:
+            current[keyword] = str(Path(value).expanduser())
+        elif keyword in ("hostname", "user", "port") and keyword not in current:
+            current[keyword] = value
+    flush()
+    return entries
 
 
 def launch_ssh(entry):
@@ -817,6 +851,9 @@ class PortkeyApp(tk.Tk):
 
         styled_button(left, "+ New Server", self.manage_on_new, primary=False).pack(fill=tk.X, pady=(0, 4))
         styled_button(left, "Delete Selected", self.manage_on_delete, primary=False).pack(fill=tk.X)
+        styled_button(left, "Import from SSH Config", self.manage_on_import_ssh_config, primary=False).pack(
+            fill=tk.X, pady=(4, 0)
+        )
 
         # ---- right: form ----
         right = tk.Frame(body, bg=BG_DARK)
@@ -845,7 +882,19 @@ class PortkeyApp(tk.Tk):
         key_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True)
         styled_button(key_row, "Browse", self.manage_on_browse_key, primary=False).pack(side=tk.LEFT, padx=(6, 0))
 
-        styled_button(right, "Save Server", self.manage_on_save).pack(fill=tk.X, pady=(16, 0))
+        save_row = tk.Frame(right, bg=BG_DARK)
+        save_row.pack(fill=tk.X, pady=(16, 0))
+        styled_button(save_row, "Save Server", self.manage_on_save).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4)
+        )
+        styled_button(save_row, "Test Connection", self.manage_on_test_connection, primary=False).pack(
+            side=tk.LEFT, fill=tk.X, expand=True
+        )
+
+        self.manage_test_var = tk.StringVar()
+        styled_label(right, "", textvariable=self.manage_test_var, font=("Segoe UI", 9)).pack(
+            anchor="w", pady=(8, 0)
+        )
 
         status_row = tk.Frame(parent, bg=BG_DARK)
         status_row.pack(fill=tk.X, padx=20, pady=(0, 14))
@@ -925,6 +974,7 @@ class PortkeyApp(tk.Tk):
         self.manage_user_var.set(entry.get("user", ""))
         self.manage_port_var.set(str(entry.get("port", "")) if entry.get("port") else "")
         self.manage_key_var.set(entry.get("key", ""))
+        self.manage_test_var.set("")
 
     def manage_on_new(self):
         self.manage_selected_index = None
@@ -937,6 +987,7 @@ class PortkeyApp(tk.Tk):
             self.manage_key_var,
         ):
             var.set("")
+        self.manage_test_var.set("")
 
     def manage_on_browse_key(self):
         path = filedialog.askopenfilename(title="Select private key file")
@@ -973,6 +1024,61 @@ class PortkeyApp(tk.Tk):
             return
         self._manage_refresh_listbox()
         self.manage_on_new()
+
+    def manage_on_test_connection(self):
+        host = self.manage_host_var.get().strip()
+        if not host:
+            messagebox.showerror("Portkey", "Enter a host to test.")
+            return
+        port_text = self.manage_port_var.get().strip()
+        port = None
+        if port_text:
+            try:
+                port = int(port_text)
+            except ValueError:
+                messagebox.showerror("Portkey", "Port must be a number.")
+                return
+        self.manage_test_var.set("Testing…")
+        self._submit(
+            lambda: self._check_server_reachable({"host": host, "port": port}),
+            self._on_test_connection_result,
+        )
+
+    def _on_test_connection_result(self, result):
+        is_online, latency_ms = result
+        if is_online:
+            self.manage_test_var.set(f"✓ Reachable ({latency_ms} ms)")
+        else:
+            self.manage_test_var.set("✗ Could not reach host")
+
+    def manage_on_import_ssh_config(self):
+        ssh_config_path = Path.home() / ".ssh" / "config"
+        if not ssh_config_path.exists():
+            messagebox.showinfo("Portkey", f"No SSH config found at {ssh_config_path}")
+            return
+        try:
+            parsed = parse_ssh_config(ssh_config_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            messagebox.showerror("Portkey", f"Failed to read SSH config:\n{exc}")
+            return
+
+        existing_names = {e.get("name") for e in self.manage_entries}
+        new_entries = []
+        for entry in parsed:
+            if entry["name"] in existing_names:
+                continue
+            existing_names.add(entry["name"])
+            new_entries.append(entry)
+
+        if not new_entries:
+            messagebox.showinfo("Portkey", "No new servers found in ~/.ssh/config.")
+            return
+
+        self.manage_entries.extend(new_entries)
+        if not self.manage_persist():
+            return
+        self._manage_refresh_listbox()
+        messagebox.showinfo("Portkey", f"Imported {len(new_entries)} server(s) from SSH config.")
 
     def manage_on_delete(self):
         selection = self.manage_listbox.curselection()
