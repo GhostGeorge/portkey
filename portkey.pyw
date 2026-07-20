@@ -74,7 +74,7 @@ CONFIG_HEADER = (
     "# activating a portkey, so you can launch several sessions in a row.\n"
 )
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 RELEASES_API_URL = "https://api.github.com/repos/GhostGeorge/portkey/releases/latest"
 RELEASES_PAGE_URL = "https://ghostgeorge.github.io/portkey/releases.html"
 
@@ -1028,7 +1028,7 @@ class PortkeyApp(tk.Tk):
     def manage_on_test_connection(self):
         host = self.manage_host_var.get().strip()
         if not host:
-            messagebox.showerror("Portkey", "Enter a host to test.")
+            self._show_alert_dialog("Portkey", "Enter a host to test.")
             return
         port_text = self.manage_port_var.get().strip()
         port = None
@@ -1036,7 +1036,7 @@ class PortkeyApp(tk.Tk):
             try:
                 port = int(port_text)
             except ValueError:
-                messagebox.showerror("Portkey", "Port must be a number.")
+                self._show_alert_dialog("Portkey", "Port must be a number.")
                 return
         self.manage_test_var.set("Testing…")
         self._submit(
@@ -1054,12 +1054,12 @@ class PortkeyApp(tk.Tk):
     def manage_on_import_ssh_config(self):
         ssh_config_path = Path.home() / ".ssh" / "config"
         if not ssh_config_path.exists():
-            messagebox.showinfo("Portkey", f"No SSH config found at {ssh_config_path}")
+            self._show_alert_dialog("Portkey", f"No SSH config found at {ssh_config_path}")
             return
         try:
             parsed = parse_ssh_config(ssh_config_path.read_text(encoding="utf-8"))
         except Exception as exc:
-            messagebox.showerror("Portkey", f"Failed to read SSH config:\n{exc}")
+            self._show_alert_dialog("Portkey", f"Failed to read SSH config:\n{exc}")
             return
 
         existing_names = {e.get("name") for e in self.manage_entries}
@@ -1071,14 +1071,14 @@ class PortkeyApp(tk.Tk):
             new_entries.append(entry)
 
         if not new_entries:
-            messagebox.showinfo("Portkey", "No new servers found in ~/.ssh/config.")
+            self._show_alert_dialog("Portkey", "No new servers found in ~/.ssh/config.")
             return
 
         self.manage_entries.extend(new_entries)
         if not self.manage_persist():
             return
         self._manage_refresh_listbox()
-        messagebox.showinfo("Portkey", f"Imported {len(new_entries)} server(s) from SSH config.")
+        self._show_alert_dialog("Portkey", f"Imported {len(new_entries)} server(s) from SSH config.")
 
     def manage_on_delete(self):
         selection = self.manage_listbox.curselection()
@@ -1619,6 +1619,48 @@ class PortkeyApp(tk.Tk):
         popup.focus_force()
         self.wait_window(popup)
         return result["value"]
+
+    def _show_alert_dialog(self, title, message):
+        # Same themed borderless-Toplevel shell as _show_confirm_dialog, just
+        # a single OK button -- for anything that used to be a native
+        # messagebox.showerror/showinfo, which is the one kind of native
+        # dialog that never got converted to match the app's theme.
+        popup = tk.Toplevel(self)
+        popup.title(title)
+        popup.overrideredirect(True)
+        popup.attributes("-topmost", True)
+        popup.configure(bg=GOLD_DIM)
+
+        inner = tk.Frame(popup, bg=BG_PANEL)
+        inner.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+
+        styled_label(
+            inner, message, bg=BG_PANEL, wraplength=320, justify=tk.LEFT
+        ).pack(anchor="w", padx=14, pady=(14, 10))
+
+        btn_row = tk.Frame(inner, bg=BG_PANEL)
+        btn_row.pack(fill=tk.X, padx=14, pady=(0, 14))
+
+        def dismiss(_event=None):
+            popup.grab_release()
+            popup.destroy()
+
+        styled_button(btn_row, "OK", dismiss).pack(fill=tk.X)
+
+        popup.bind("<Return>", dismiss)
+        popup.bind("<Escape>", dismiss)
+        popup.protocol("WM_DELETE_WINDOW", dismiss)
+
+        self.update_idletasks()
+        popup.update_idletasks()
+        width, height = popup.winfo_reqwidth(), popup.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width() - width) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - height) // 2
+        popup.geometry(f"{width}x{height}+{x}+{y}")
+
+        popup.grab_set()
+        popup.focus_force()
+        self.wait_window(popup)
 
     # -- threading plumbing: background work never touches Tk widgets directly,
     # results are routed back through a queue drained on the main thread.
