@@ -949,8 +949,8 @@ class PortkeyApp(tk.Tk):
 
         # Authentication method selector
         auth_frame = tk.Frame(right, bg=BG_DARK)
-        auth_frame.pack(fill=tk.X, pady=(0, 8))
-        styled_label(auth_frame, "Authentication method").pack(anchor="w", pady=(0, 4))
+        auth_frame.pack(fill=tk.X, pady=(0, 4))
+        styled_label(auth_frame, "Authentication method").pack(anchor="w")
 
         auth_btn_frame = tk.Frame(auth_frame, bg=BG_DARK)
         auth_btn_frame.pack(fill=tk.X)
@@ -963,7 +963,7 @@ class PortkeyApp(tk.Tk):
             btn = tk.Button(
                 auth_btn_frame,
                 text=text,
-                font=("Segoe UI", 9, "bold"),
+                font=("Segoe UI", 10, "bold"),
                 bg=BG_PANEL_LIGHT,
                 fg=TEXT_LIGHT,
                 activebackground=BG_PANEL,
@@ -971,11 +971,10 @@ class PortkeyApp(tk.Tk):
                 relief=tk.FLAT,
                 border=0,
                 cursor="hand2",
-                padx=14,
-                pady=6,
-                command=lambda: _on_auth_method_change(method),
+                padx=12,
+                pady=4
             )
-            btn.pack(side=tk.LEFT, padx=(0, 6))
+            btn.pack(side=tk.LEFT, padx=2)
             return btn
 
         self.auth_key_btn = _make_auth_btn("Private Key", "key")
@@ -984,22 +983,23 @@ class PortkeyApp(tk.Tk):
         # Password field (shown when "Password" is selected)
         self.manage_pwd_row = tk.Frame(right, bg=BG_DARK)
         self.manage_pwd_label = styled_label(self.manage_pwd_row, "Password (stored securely in Windows Credential Manager)")
-        self.manage_pwd_label.pack(anchor="w", pady=(0, 2))
+        self.manage_pwd_label.pack(anchor="w", pady=(2, 0))
         self.manage_pwd_wrap, _ = styled_entry(self.manage_pwd_row, self.manage_password_var, show="•")
-        self.manage_pwd_wrap.pack(fill=tk.X)
+        self.manage_pwd_wrap.pack(fill=tk.X, pady=(0, 4))
 
         # Private key field (shown when "Private Key" is selected)
         self.manage_key_row = tk.Frame(right, bg=BG_DARK)
         self.manage_key_label = styled_label(self.manage_key_row, "Private key (optional)")
-        self.manage_key_label.pack(anchor="w", pady=(0, 2))
+        self.manage_key_label.pack(anchor="w", pady=(2, 0))
         key_wrap = tk.Frame(self.manage_key_row, bg=BG_DARK)
         key_wrap.pack(fill=tk.X)
         self.manage_key_wrap, _ = styled_entry(key_wrap, self.manage_key_var)
-        self.manage_key_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.manage_key_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2, pady=(0, 4))
         styled_button(key_wrap, "Browse", self.manage_on_browse_key, primary=False).pack(side=tk.LEFT, padx=(6, 0))
 
+        # Action buttons below auth fields
         save_row = tk.Frame(right, bg=BG_DARK)
-        save_row.pack(fill=tk.X, pady=(16, 0))
+        save_row.pack(fill=tk.X, pady=(4, 0))
         styled_button(save_row, "Save Server", self.manage_on_save).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4)
         )
