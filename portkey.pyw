@@ -18,6 +18,15 @@ from tkinter import filedialog, messagebox
 
 import paramiko
 import yaml
+# Windows Credential Manager integration (Windows only)
+try:
+    import win32cred
+    import base64
+    HAS_CREDENTIAL_MANAGER = True
+except ImportError:
+    win32cred = None
+    base64 = None
+    HAS_CREDENTIAL_MANAGER = False
 
 # Without this, Windows treats the process as DPI-unaware and bitmap-stretches
 # the whole window on any scaled display (125%, 150%, ...) -- text renders
@@ -69,13 +78,14 @@ CONFIG_HEADER = (
     "#   user: ssh username\n"
     "#   port: ssh port (optional, defaults to 22)\n"
     "#   key: path to private key file (optional, passed as -i)\n"
-    "#   password: ssh password (optional, stored in PLAIN TEXT)\n"
+    "#   password: ssh password (optional, stored in Windows Credential Manager)\n"
+    "#   use_cred_manager: whether password is in Credential Manager (default: true)\n"
     "#\n"
     "# settings.close_on_connect: false keeps the window open after\n"
     "# activating a portkey, so you can launch several sessions in a row.\n"
 )
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 RELEASES_API_URL = "https://api.github.com/repos/GhostGeorge/portkey/releases/latest"
 RELEASES_PAGE_URL = "https://ghostgeorge.github.io/portkey/releases.html"
 
@@ -113,7 +123,61 @@ def save_config(vps, settings):
         )
 
 
-def build_entry(name, host, user, port, key, password=None):
+# ---------------------------------------------------------------------------
+# Windows Credential Manager helper
+# ---------------------------------------------------------------------------
+def _cred_write(target, username, password):
+    """Store a password in Windows Credential Manager."""
+    global win32cred
+    if not HAS_CREDENTIAL_MANAGER or win32cred is None:
+        raise RuntimeError("pywin32 is required to use Windows Credential Manager")
+    blob = base64.b64encode(password.encode("utf-16le")).decode("utf-8")
+    entry = {
+        "Target": target,
+        "UserName": username,
+        "CredentialBlob": blob,
+        "CredentialBlobFormat": "B64",
+        "Persist": 1,  # CRED_PERSIST_LOCAL_MACHINE
+        "Type": win32cred.CRED_TYPE_GENERIC,
+        "Desc": "Portkey password",
+    }
+    try:
+        win32cred.CredWrite(entry, win32cred.CRED_PERSIST_LOCAL_MACHINE, 0)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to write credential: {exc}")
+
+
+def _cred_read(target, username):
+    """Retrieve a password from Windows Credential Manager. Returns None if not found."""
+    global win32cred
+    if not HAS_CREDENTIAL_MANAGER or win32cred is None:
+        return None
+    try:
+        credentials = win32cred.CredEnumerate(target, win32cred.CRED_TYPE_GENERIC)
+    except Exception:
+        return None
+    for c in credentials:
+        if c.get("Target") == target and c.get("UserName") == username:
+            try:
+                return base64.b64decode(c["CredentialBlob"]).decode("utf-16le")
+            except Exception:
+                return None
+    return None
+
+
+def _cred_delete(target, username):
+    """Delete a password from Windows Credential Manager."""
+    global win32cred
+    if not HAS_CREDENTIAL_MANAGER or win32cred is None:
+        return False
+    try:
+        win32cred.CredDelete(target)
+        return True
+    except Exception:
+        return False
+
+
+def build_entry(name, host, user, port, key, password=None, use_cred_manager=False):
     entry = {"name": name, "host": host}
     if user:
         entry["user"] = user
@@ -123,6 +187,7 @@ def build_entry(name, host, user, port, key, password=None):
         entry["key"] = key
     if password:
         entry["password"] = password
+        entry["use_cred_manager"] = use_cred_manager
     return entry
 
 
@@ -870,24 +935,68 @@ class PortkeyApp(tk.Tk):
         self.manage_port_var = tk.StringVar()
         self.manage_key_var = tk.StringVar()
         self.manage_password_var = tk.StringVar()
+        self.manage_auth_method_var = tk.StringVar(value="key")  # "key" or "password"
 
         for label, var, show in [
             ("Name", self.manage_name_var, None),
             ("Host / IP", self.manage_host_var, None),
             ("User", self.manage_user_var, None),
-            ("Password (optional, stored in plain text)", self.manage_password_var, "•"),
             ("Port (default 22)", self.manage_port_var, None),
         ]:
             styled_label(right, label).pack(anchor="w", pady=(0, 2))
             wrap, _ = styled_entry(right, var, show=show)
             wrap.pack(fill=tk.X, pady=(0, 6))
 
-        styled_label(right, "Private key (optional)").pack(anchor="w", pady=(0, 2))
-        key_row = tk.Frame(right, bg=BG_DARK)
-        key_row.pack(fill=tk.X)
-        key_wrap, _ = styled_entry(key_row, self.manage_key_var)
-        key_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        styled_button(key_row, "Browse", self.manage_on_browse_key, primary=False).pack(side=tk.LEFT, padx=(6, 0))
+        # Authentication method selector
+        auth_frame = tk.Frame(right, bg=BG_DARK)
+        auth_frame.pack(fill=tk.X, pady=(0, 8))
+        styled_label(auth_frame, "Authentication method").pack(anchor="w", pady=(0, 4))
+
+        auth_btn_frame = tk.Frame(auth_frame, bg=BG_DARK)
+        auth_btn_frame.pack(fill=tk.X)
+
+        def _on_auth_method_change(method):
+            self.manage_auth_method_var.set(method)
+            self._refresh_auth_fields()
+
+        def _make_auth_btn(text, method):
+            btn = tk.Button(
+                auth_btn_frame,
+                text=text,
+                font=("Segoe UI", 9, "bold"),
+                bg=BG_PANEL_LIGHT,
+                fg=TEXT_LIGHT,
+                activebackground=BG_PANEL,
+                activeforeground=TEXT_LIGHT,
+                relief=tk.FLAT,
+                border=0,
+                cursor="hand2",
+                padx=14,
+                pady=6,
+                command=lambda: _on_auth_method_change(method),
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 6))
+            return btn
+
+        self.auth_key_btn = _make_auth_btn("Private Key", "key")
+        self.auth_pwd_btn = _make_auth_btn("Password", "password")
+
+        # Password field (shown when "Password" is selected)
+        self.manage_pwd_row = tk.Frame(right, bg=BG_DARK)
+        self.manage_pwd_label = styled_label(self.manage_pwd_row, "Password (stored securely in Windows Credential Manager)")
+        self.manage_pwd_label.pack(anchor="w", pady=(0, 2))
+        self.manage_pwd_wrap, _ = styled_entry(self.manage_pwd_row, self.manage_password_var, show="•")
+        self.manage_pwd_wrap.pack(fill=tk.X)
+
+        # Private key field (shown when "Private Key" is selected)
+        self.manage_key_row = tk.Frame(right, bg=BG_DARK)
+        self.manage_key_label = styled_label(self.manage_key_row, "Private key (optional)")
+        self.manage_key_label.pack(anchor="w", pady=(0, 2))
+        key_wrap = tk.Frame(self.manage_key_row, bg=BG_DARK)
+        key_wrap.pack(fill=tk.X)
+        self.manage_key_wrap, _ = styled_entry(key_wrap, self.manage_key_var)
+        self.manage_key_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        styled_button(key_wrap, "Browse", self.manage_on_browse_key, primary=False).pack(side=tk.LEFT, padx=(6, 0))
 
         save_row = tk.Frame(right, bg=BG_DARK)
         save_row.pack(fill=tk.X, pady=(16, 0))
@@ -902,6 +1011,12 @@ class PortkeyApp(tk.Tk):
         styled_label(right, "", textvariable=self.manage_test_var, font=("Segoe UI", 9)).pack(
             anchor="w", pady=(8, 0)
         )
+
+        # Initialize auth field visibility
+        self._refresh_auth_fields()
+
+        # Initialize auth field visibility
+        self._refresh_auth_fields()
 
         status_row = tk.Frame(parent, bg=BG_DARK)
         status_row.pack(fill=tk.X, padx=20, pady=(0, 14))
@@ -1520,6 +1635,23 @@ class PortkeyApp(tk.Tk):
             self._dropdown_just_closed = True
             self.after(150, lambda: setattr(self, "_dropdown_just_closed", False))
         self._server_dropdown_popup = None
+
+    def _refresh_auth_fields(self):
+        """Show/hide password and key fields based on selected auth method."""
+        if self.manage_auth_method_var.get() == "password":
+            # Show password field, hide key field
+            self.manage_pwd_row.pack(fill=tk.X, pady=(0, 6))
+            self.manage_key_row.pack_forget()
+            # Update auth button colors
+            self.auth_key_btn.config(bg=BG_PANEL_LIGHT, fg=TEXT_LIGHT)
+            self.auth_pwd_btn.config(bg=GOLD, fg=BG_DARK)
+        else:  # "key"
+            # Show key field, hide password field
+            self.manage_pwd_row.pack_forget()
+            self.manage_key_row.pack(fill=tk.X, pady=(0, 6))
+            # Update auth button colors
+            self.auth_key_btn.config(bg=GOLD, fg=BG_DARK)
+            self.auth_pwd_btn.config(bg=BG_PANEL_LIGHT, fg=TEXT_LIGHT)
 
     def _show_input_dialog(self, title, prompt, initial="", show=None):
         # Reuses the server dropdown's borderless-Toplevel visual pattern
