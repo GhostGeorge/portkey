@@ -75,7 +75,7 @@ CONFIG_HEADER = (
     "# activating a portkey, so you can launch several sessions in a row.\n"
 )
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 RELEASES_API_URL = "https://api.github.com/repos/GhostGeorge/portkey/releases/latest"
 RELEASES_PAGE_URL = "https://ghostgeorge.github.io/portkey/releases.html"
 
