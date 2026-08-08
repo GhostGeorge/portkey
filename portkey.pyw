@@ -69,6 +69,7 @@ CONFIG_HEADER = (
     "#   user: ssh username\n"
     "#   port: ssh port (optional, defaults to 22)\n"
     "#   key: path to private key file (optional, passed as -i)\n"
+    "#   password: ssh password (optional, stored in PLAIN TEXT)\n"
     "#\n"
     "# settings.close_on_connect: false keeps the window open after\n"
     "# activating a portkey, so you can launch several sessions in a row.\n"
@@ -112,7 +113,7 @@ def save_config(vps, settings):
         )
 
 
-def build_entry(name, host, user, port, key):
+def build_entry(name, host, user, port, key, password=None):
     entry = {"name": name, "host": host}
     if user:
         entry["user"] = user
@@ -120,6 +121,8 @@ def build_entry(name, host, user, port, key):
         entry["port"] = port
     if key:
         entry["key"] = key
+    if password:
+        entry["password"] = password
     return entry
 
 
@@ -237,10 +240,9 @@ def styled_label(parent, text, **kwargs):
     return tk.Label(parent, text=text, **opts)
 
 
-def styled_entry(parent, textvariable):
+def styled_entry(parent, textvariable, show=None):
     wrap = tk.Frame(parent, bg=BG_PANEL, highlightthickness=1, highlightbackground=GOLD_DIM, highlightcolor=GOLD)
-    entry = tk.Entry(
-        wrap,
+    entry_kwargs = dict(
         textvariable=textvariable,
         bg=BG_PANEL,
         fg=TEXT_LIGHT,
@@ -250,6 +252,9 @@ def styled_entry(parent, textvariable):
         highlightthickness=0,
         border=0,
     )
+    if show is not None:
+        entry_kwargs["show"] = show
+    entry = tk.Entry(wrap, **entry_kwargs)
     entry.pack(fill=tk.X, padx=8, pady=6)
     return wrap, entry
 
@@ -864,15 +869,17 @@ class PortkeyApp(tk.Tk):
         self.manage_user_var = tk.StringVar()
         self.manage_port_var = tk.StringVar()
         self.manage_key_var = tk.StringVar()
+        self.manage_password_var = tk.StringVar()
 
-        for label, var in [
-            ("Name", self.manage_name_var),
-            ("Host / IP", self.manage_host_var),
-            ("User", self.manage_user_var),
-            ("Port (default 22)", self.manage_port_var),
+        for label, var, show in [
+            ("Name", self.manage_name_var, None),
+            ("Host / IP", self.manage_host_var, None),
+            ("User", self.manage_user_var, None),
+            ("Password (optional, stored in plain text)", self.manage_password_var, "•"),
+            ("Port (default 22)", self.manage_port_var, None),
         ]:
             styled_label(right, label).pack(anchor="w", pady=(0, 2))
-            wrap, _ = styled_entry(right, var)
+            wrap, _ = styled_entry(right, var, show=show)
             wrap.pack(fill=tk.X, pady=(0, 6))
 
         styled_label(right, "Private key (optional)").pack(anchor="w", pady=(0, 2))
@@ -974,6 +981,7 @@ class PortkeyApp(tk.Tk):
         self.manage_user_var.set(entry.get("user", ""))
         self.manage_port_var.set(str(entry.get("port", "")) if entry.get("port") else "")
         self.manage_key_var.set(entry.get("key", ""))
+        self.manage_password_var.set(entry.get("password", ""))
         self.manage_test_var.set("")
 
     def manage_on_new(self):
@@ -985,6 +993,7 @@ class PortkeyApp(tk.Tk):
             self.manage_user_var,
             self.manage_port_var,
             self.manage_key_var,
+            self.manage_password_var,
         ):
             var.set("")
         self.manage_test_var.set("")
@@ -1000,6 +1009,7 @@ class PortkeyApp(tk.Tk):
         user = self.manage_user_var.get().strip()
         port_text = self.manage_port_var.get().strip()
         key = self.manage_key_var.get().strip()
+        password = self.manage_password_var.get()
 
         if not name or not host:
             messagebox.showerror("Portkey", "Name and Host are required.")
@@ -1013,7 +1023,7 @@ class PortkeyApp(tk.Tk):
                 messagebox.showerror("Portkey", "Port must be a number.")
                 return
 
-        entry = build_entry(name, host, user, port, key)
+        entry = build_entry(name, host, user, port, key, password)
 
         if self.manage_selected_index is None:
             self.manage_entries.append(entry)
@@ -1511,7 +1521,7 @@ class PortkeyApp(tk.Tk):
             self.after(150, lambda: setattr(self, "_dropdown_just_closed", False))
         self._server_dropdown_popup = None
 
-    def _show_input_dialog(self, title, prompt, initial=""):
+    def _show_input_dialog(self, title, prompt, initial="", show=None):
         # Reuses the server dropdown's borderless-Toplevel visual pattern
         # (dark/gold themed, no native OS chrome) but with different
         # semantics: truly modal, and does NOT close on FocusOut like the
@@ -1532,7 +1542,7 @@ class PortkeyApp(tk.Tk):
         styled_label(inner, prompt, bg=BG_PANEL).pack(anchor="w", padx=12, pady=(12, 4))
 
         var = tk.StringVar(value=initial)
-        wrap, entry = styled_entry(inner, var)
+        wrap, entry = styled_entry(inner, var, show=show)
         wrap.pack(fill=tk.X, padx=12)
         entry.select_range(0, tk.END)
         entry.icursor(tk.END)
@@ -1568,6 +1578,9 @@ class PortkeyApp(tk.Tk):
         entry.focus_set()
         self.wait_window(popup)
         return result["value"]
+
+    def _show_password_dialog(self, title, prompt):
+        return self._show_input_dialog(title, prompt, show="•")
 
     def _show_confirm_dialog(self, title, message, confirm_text="Delete"):
         # Same themed borderless-Toplevel shell as _show_input_dialog, just
@@ -1696,7 +1709,7 @@ class PortkeyApp(tk.Tk):
         self.after(1500, lambda: self.transfer_status_var.set(original) if self.sftp_client else None)
 
     # -- connect / disconnect --
-    def transfer_on_connect(self):
+    def transfer_on_connect(self, password_override=None):
         name = self.transfer_server_var.get()
         entry = next((e for e in self.all_entries if e.get("name") == name), None)
         if not entry:
@@ -1705,9 +1718,13 @@ class PortkeyApp(tk.Tk):
         self.transfer_disconnect()
         self._transfer_entry = entry
         self.transfer_status_var.set("Connecting…")
-        self._submit(lambda: self._do_connect(entry), self._on_connected, self._on_connect_error)
+        self._submit(
+            lambda: self._do_connect(entry, password_override),
+            lambda result: self._on_connected(result, password_override, entry),
+            lambda exc: self._on_connect_error(exc, entry),
+        )
 
-    def _do_connect(self, entry):
+    def _do_connect(self, entry, password_override=None):
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         connect_kwargs = dict(
@@ -1715,20 +1732,26 @@ class PortkeyApp(tk.Tk):
             port=entry.get("port", 22),
             username=entry.get("user"),
             timeout=10,
-            # `timeout` alone only bounds the initial TCP connect -- a stalled
-            # SSH banner exchange or auth phase can otherwise hang forever.
             banner_timeout=10,
             auth_timeout=10,
         )
         key = entry.get("key")
         if key:
             connect_kwargs["key_filename"] = key
+        password = password_override if password_override is not None else entry.get("password")
+        if password:
+            connect_kwargs["password"] = password
+            if not key:
+                # don't let paramiko silently try an unrelated key/agent
+                # identity when a password was explicitly given
+                connect_kwargs["look_for_keys"] = False
+                connect_kwargs["allow_agent"] = False
         client.connect(**connect_kwargs)
         sftp = client.open_sftp()
         remote_start = sftp.normalize(".")
         return client, sftp, remote_start
 
-    def _on_connected(self, result):
+    def _on_connected(self, result, prompted_password=None, entry=None):
         client, sftp, remote_start = result
         self.ssh_client = client
         self.sftp_client = sftp
@@ -1736,10 +1759,36 @@ class PortkeyApp(tk.Tk):
         self.transfer_status_var.set(f"Connected to {self.transfer_server_var.get()}")
         self._set_connect_button_connected(True)
         self._remote_refresh(remote_start)
+        if prompted_password and entry is not None and not entry.get("password"):
+            if self._show_confirm_dialog(
+                "Save Password",
+                "Save this password in config.yaml for future connections?\nIt will be stored in plain text.",
+                confirm_text="Save",
+            ):
+                entry["password"] = prompted_password
+                for e in self.all_entries:
+                    if e.get("name") == entry.get("name"):
+                        e["password"] = prompted_password
+                try:
+                    save_config(self.all_entries, self.settings)
+                except Exception as exc:
+                    messagebox.showerror("Portkey", f"Failed to save config.yaml:\n{exc}")
 
-    def _on_connect_error(self, exc):
+    def _on_connect_error(self, exc, entry=None):
         self.transfer_status_var.set("Not connected")
         self._set_connect_button_connected(False)
+        if isinstance(exc, paramiko.AuthenticationException) and entry is not None and not entry.get("password"):
+            password = self._show_password_dialog(
+                "Password required", f"Enter password for {entry.get('user', '')}@{entry['host']}:"
+            )
+            if password:
+                self.transfer_status_var.set("Connecting…")
+                self._submit(
+                    lambda: self._do_connect(entry, password),
+                    lambda result: self._on_connected(result, password, entry),
+                    lambda e: self._on_connect_error(e, entry),
+                )
+                return
         messagebox.showerror("Portkey", self._describe_connect_error(exc))
 
     def _set_connect_button_connected(self, connected):
