@@ -828,8 +828,15 @@ class PortkeyApp(tk.Tk):
 
         body = tk.Frame(parent, bg=BG_DARK)
         body.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 14))
-        body.columnconfigure(0, weight=1)
-        body.columnconfigure(1, weight=1)
+        # `uniform` (not just equal `weight`) is required to keep the two
+        # columns pixel-identical regardless of their children's natural
+        # width -- otherwise toggling the auth method (key row has a wider
+        # "Browse" button next to its entry than the password row) changes
+        # column 1's content width, and without a uniform group tying it to
+        # column 0, the left column (server list + buttons) visibly resizes
+        # too even though its own content never changed.
+        body.columnconfigure(0, weight=1, uniform="manage_cols")
+        body.columnconfigure(1, weight=1, uniform="manage_cols")
         body.rowconfigure(0, weight=1)
 
         # ---- left: list of servers ----
@@ -861,8 +868,17 @@ class PortkeyApp(tk.Tk):
         )
 
         # ---- right: form ----
-        right = tk.Frame(body, bg=BG_DARK)
-        right.grid(row=0, column=1, sticky="nsew")
+        # Wrapped in its own pack_propagate(False) frame with an explicit
+        # width, same trick used in _build_transfer_pane -- this decouples
+        # right's rendered width from its own children's natural size, so
+        # toggling the auth fields (which changes their minimum content
+        # width) can no longer cause even a 1px jitter in the grid's pixel
+        # rounding.
+        right_outer = tk.Frame(body, bg=BG_DARK, width=300)
+        right_outer.grid(row=0, column=1, sticky="nsew")
+        right_outer.pack_propagate(False)
+        right = tk.Frame(right_outer, bg=BG_DARK)
+        right.pack(fill=tk.BOTH, expand=True)
 
         self.manage_name_var = tk.StringVar()
         self.manage_host_var = tk.StringVar()
@@ -908,16 +924,26 @@ class PortkeyApp(tk.Tk):
         self.auth_key_btn = _make_auth_btn("Private Key", "key")
         self.auth_pwd_btn = _make_auth_btn("Password", "password")
 
-        # --- MOVED BELOW AUTH SELECTOR ---
+        # Fixed-position container for whichever auth field is currently
+        # shown. This frame itself is packed exactly ONCE, right here, and
+        # is never pack_forget()'d -- only its two children (pwd_row /
+        # key_row) toggle via pack/pack_forget inside it. That keeps this
+        # whole block pinned between the auth selector and Save/Test, since
+        # toggling a widget's own pack_forget()+pack() re-appends it to the
+        # END of its parent's current pack order (here: after save_row),
+        # which is what caused the field to jump below the buttons.
+        self.manage_auth_fields_frame = tk.Frame(right, bg=BG_DARK)
+        self.manage_auth_fields_frame.pack(fill=tk.X)
+
         # Password field (shown when "Password" is selected)
-        self.manage_pwd_row = tk.Frame(right, bg=BG_DARK)
+        self.manage_pwd_row = tk.Frame(self.manage_auth_fields_frame, bg=BG_DARK)
         self.manage_pwd_label = styled_label(self.manage_pwd_row, "Password (stored in plain text)")
         self.manage_pwd_label.pack(anchor="w", pady=(0, 2))
         self.manage_pwd_wrap, _ = styled_entry(self.manage_pwd_row, self.manage_password_var, show="•")
         self.manage_pwd_wrap.pack(fill=tk.X)
 
         # Private key field (shown when "Private Key" is selected)
-        self.manage_key_row = tk.Frame(right, bg=BG_DARK)
+        self.manage_key_row = tk.Frame(self.manage_auth_fields_frame, bg=BG_DARK)
         self.manage_key_label = styled_label(self.manage_key_row, "Private key (optional)")
         self.manage_key_label.pack(anchor="w", pady=(0, 2))
         key_wrap = tk.Frame(self.manage_key_row, bg=BG_DARK)
