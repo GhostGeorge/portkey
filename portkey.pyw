@@ -18,15 +18,6 @@ from tkinter import filedialog, messagebox
 
 import paramiko
 import yaml
-# Windows Credential Manager integration (Windows only)
-try:
-    import win32cred
-    import base64
-    HAS_CREDENTIAL_MANAGER = True
-except ImportError:
-    win32cred = None
-    base64 = None
-    HAS_CREDENTIAL_MANAGER = False
 
 # Without this, Windows treats the process as DPI-unaware and bitmap-stretches
 # the whole window on any scaled display (125%, 150%, ...) -- text renders
@@ -78,8 +69,7 @@ CONFIG_HEADER = (
     "#   user: ssh username\n"
     "#   port: ssh port (optional, defaults to 22)\n"
     "#   key: path to private key file (optional, passed as -i)\n"
-    "#   password: ssh password (optional, stored in Windows Credential Manager)\n"
-    "#   use_cred_manager: whether password is in Credential Manager (default: true)\n"
+    "#   password: ssh password (optional, stored in PLAIN TEXT)\n"
     "#\n"
     "# settings.close_on_connect: false keeps the window open after\n"
     "# activating a portkey, so you can launch several sessions in a row.\n"
@@ -123,61 +113,7 @@ def save_config(vps, settings):
         )
 
 
-# ---------------------------------------------------------------------------
-# Windows Credential Manager helper
-# ---------------------------------------------------------------------------
-def _cred_write(target, username, password):
-    """Store a password in Windows Credential Manager."""
-    global win32cred
-    if not HAS_CREDENTIAL_MANAGER or win32cred is None:
-        raise RuntimeError("pywin32 is required to use Windows Credential Manager")
-    blob = base64.b64encode(password.encode("utf-16le")).decode("utf-8")
-    entry = {
-        "Target": target,
-        "UserName": username,
-        "CredentialBlob": blob,
-        "CredentialBlobFormat": "B64",
-        "Persist": 1,  # CRED_PERSIST_LOCAL_MACHINE
-        "Type": win32cred.CRED_TYPE_GENERIC,
-        "Desc": "Portkey password",
-    }
-    try:
-        win32cred.CredWrite(entry, win32cred.CRED_PERSIST_LOCAL_MACHINE, 0)
-    except Exception as exc:
-        raise RuntimeError(f"Failed to write credential: {exc}")
-
-
-def _cred_read(target, username):
-    """Retrieve a password from Windows Credential Manager. Returns None if not found."""
-    global win32cred
-    if not HAS_CREDENTIAL_MANAGER or win32cred is None:
-        return None
-    try:
-        credentials = win32cred.CredEnumerate(target, win32cred.CRED_TYPE_GENERIC)
-    except Exception:
-        return None
-    for c in credentials:
-        if c.get("Target") == target and c.get("UserName") == username:
-            try:
-                return base64.b64decode(c["CredentialBlob"]).decode("utf-16le")
-            except Exception:
-                return None
-    return None
-
-
-def _cred_delete(target, username):
-    """Delete a password from Windows Credential Manager."""
-    global win32cred
-    if not HAS_CREDENTIAL_MANAGER or win32cred is None:
-        return False
-    try:
-        win32cred.CredDelete(target)
-        return True
-    except Exception:
-        return False
-
-
-def build_entry(name, host, user, port, key, password=None, use_cred_manager=False):
+def build_entry(name, host, user, port, key, password=None):
     entry = {"name": name, "host": host}
     if user:
         entry["user"] = user
@@ -187,7 +123,6 @@ def build_entry(name, host, user, port, key, password=None, use_cred_manager=Fal
         entry["key"] = key
     if password:
         entry["password"] = password
-        entry["use_cred_manager"] = use_cred_manager
     return entry
 
 
@@ -947,7 +882,7 @@ class PortkeyApp(tk.Tk):
             wrap, _ = styled_entry(right, var, show=show)
             wrap.pack(fill=tk.X, pady=(0, 6))
 
-        # Authentication method selector
+        # ---- Auth method selector ----
         auth_frame = tk.Frame(right, bg=BG_DARK)
         auth_frame.pack(fill=tk.X, pady=(0, 4))
         styled_label(auth_frame, "Authentication method").pack(anchor="w")
@@ -955,51 +890,52 @@ class PortkeyApp(tk.Tk):
         auth_btn_frame = tk.Frame(auth_frame, bg=BG_DARK)
         auth_btn_frame.pack(fill=tk.X)
 
+        # --- AUTH BUTTONS CREATED BELOW ---
         def _on_auth_method_change(method):
             self.manage_auth_method_var.set(method)
             self._refresh_auth_fields()
 
         def _make_auth_btn(text, method):
-            btn = tk.Button(
+            btn = styled_button(
                 auth_btn_frame,
-                text=text,
-                font=("Segoe UI", 10, "bold"),
-                bg=BG_PANEL_LIGHT,
-                fg=TEXT_LIGHT,
-                activebackground=BG_PANEL,
-                activeforeground=TEXT_LIGHT,
-                relief=tk.FLAT,
-                border=0,
-                cursor="hand2",
-                padx=12,
-                pady=4
+                text,
+                lambda: _on_auth_method_change(method),
+                primary=False
             )
-            btn.pack(side=tk.LEFT, padx=2)
+            btn.pack(side=tk.LEFT, padx=(0, 6))
             return btn
 
         self.auth_key_btn = _make_auth_btn("Private Key", "key")
         self.auth_pwd_btn = _make_auth_btn("Password", "password")
 
+        # --- MOVED BELOW AUTH SELECTOR ---
         # Password field (shown when "Password" is selected)
         self.manage_pwd_row = tk.Frame(right, bg=BG_DARK)
-        self.manage_pwd_label = styled_label(self.manage_pwd_row, "Password (stored securely in Windows Credential Manager)")
-        self.manage_pwd_label.pack(anchor="w", pady=(2, 0))
+        self.manage_pwd_label = styled_label(self.manage_pwd_row, "Password (stored in plain text)")
+        self.manage_pwd_label.pack(anchor="w", pady=(0, 2))
         self.manage_pwd_wrap, _ = styled_entry(self.manage_pwd_row, self.manage_password_var, show="•")
-        self.manage_pwd_wrap.pack(fill=tk.X, pady=(0, 4))
+        self.manage_pwd_wrap.pack(fill=tk.X)
 
         # Private key field (shown when "Private Key" is selected)
         self.manage_key_row = tk.Frame(right, bg=BG_DARK)
         self.manage_key_label = styled_label(self.manage_key_row, "Private key (optional)")
-        self.manage_key_label.pack(anchor="w", pady=(2, 0))
+        self.manage_key_label.pack(anchor="w", pady=(0, 2))
         key_wrap = tk.Frame(self.manage_key_row, bg=BG_DARK)
         key_wrap.pack(fill=tk.X)
         self.manage_key_wrap, _ = styled_entry(key_wrap, self.manage_key_var)
-        self.manage_key_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2, pady=(0, 4))
+        self.manage_key_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True)
         styled_button(key_wrap, "Browse", self.manage_on_browse_key, primary=False).pack(side=tk.LEFT, padx=(6, 0))
 
+        # Initialize auth field visibility -- must run AFTER manage_pwd_row
+        # and manage_key_row exist (both are referenced inside
+        # _refresh_auth_fields), so this call is deliberately placed here
+        # rather than immediately after the auth buttons above.
+        self._refresh_auth_fields()
+
+        # --- MOVED BELOW AUTH FIELDS ---
         # Action buttons below auth fields
         save_row = tk.Frame(right, bg=BG_DARK)
-        save_row.pack(fill=tk.X, pady=(4, 0))
+        save_row.pack(fill=tk.X, pady=(16, 0))
         styled_button(save_row, "Save Server", self.manage_on_save).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4)
         )
@@ -1011,12 +947,6 @@ class PortkeyApp(tk.Tk):
         styled_label(right, "", textvariable=self.manage_test_var, font=("Segoe UI", 9)).pack(
             anchor="w", pady=(8, 0)
         )
-
-        # Initialize auth field visibility
-        self._refresh_auth_fields()
-
-        # Initialize auth field visibility
-        self._refresh_auth_fields()
 
         status_row = tk.Frame(parent, bg=BG_DARK)
         status_row.pack(fill=tk.X, padx=20, pady=(0, 14))
@@ -1097,6 +1027,12 @@ class PortkeyApp(tk.Tk):
         self.manage_port_var.set(str(entry.get("port", "")) if entry.get("port") else "")
         self.manage_key_var.set(entry.get("key", ""))
         self.manage_password_var.set(entry.get("password", ""))
+        # Set auth method based on whether password or key is present
+        if entry.get("password") and not entry.get("key"):
+            self.manage_auth_method_var.set("password")
+        else:
+            self.manage_auth_method_var.set("key")
+        self._refresh_auth_fields()
         self.manage_test_var.set("")
 
     def manage_on_new(self):
@@ -1111,6 +1047,8 @@ class PortkeyApp(tk.Tk):
             self.manage_password_var,
         ):
             var.set("")
+        self.manage_auth_method_var.set("key")  # Default to private key
+        self._refresh_auth_fields()
         self.manage_test_var.set("")
 
     def manage_on_browse_key(self):
